@@ -69,14 +69,19 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Error en la búsqueda');
+      if (!res.ok) throw new Error(data.message || `Error del servidor (${res.status})`);
       
       setResults(append ? [...results, ...data.hits] : data.hits);
       setSearchAfter(data.search_after || null);
       setStatus(`Resultados: ${data.total}`);
     } catch (error) {
-      setStatus('Error: ' + error.message);
+      if (error.message === 'Failed to fetch') {
+        setStatus('⚠️ No se puede conectar con el Backend (localhost:3000). ¿Está arrancado?');
+      } else {
+        setStatus('⚠️ ' + error.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -92,23 +97,27 @@ function App() {
       });
       const data = await res.json();
       setStatus(data.message);
+      onSearch(false);
     } catch (error) {
-      setStatus('Error: ' + error.message);
+      setStatus('⚠️ ' + error.message);
     }
   };
 
+  const [seedCount, setSeedCount] = useState(50);
+
   const onSeed = async () => {
-    setStatus('Generando 50 documentos de prueba...');
+    setStatus(`Generando ${seedCount} documentos de prueba...`);
     try {
       const res = await fetch(`${API_BASE}/seed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template_id: templateId, project_name: projectName, count: 50 }),
+        body: JSON.stringify({ template_id: templateId, project_name: projectName, count: seedCount }),
       });
       const data = await res.json();
       setStatus(data.message);
+      onSearch(false);
     } catch (error) {
-      setStatus('Error: ' + error.message);
+      setStatus('⚠️ ' + error.message);
     }
   };
 
@@ -188,7 +197,17 @@ function App() {
               {loading ? 'Buscando...' : 'Aplicar Filtros'}
             </button>
             <div className="btn-group-v">
-              <button onClick={onSeed} className="btn-outline">Generar 50 Datos</button>
+              <div className="seed-control">
+                <input 
+                  type="number" 
+                  value={seedCount} 
+                  onChange={(e) => setSeedCount(parseInt(e.target.value) || 1)}
+                  className="input-mini"
+                  min="1"
+                  max="500000"
+                />
+                <button onClick={onSeed} className="btn-outline">Generar Datos</button>
+              </div>
               <button onClick={onSetup} className="btn-outline mini">Reset Index</button>
             </div>
           </div>
