@@ -9,9 +9,11 @@ function App() {
   const [filters, setFilters] = useState([]);
   const [filterValues, setFilterValues] = useState({ ID: '', State: '' });
   const [results, setResults] = useState([]);
-  const [searchAfter, setSearchAfter] = useState(null);
+  const [totalResults, setTotalResults] = useState(0);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
 
   // Normaliza un filtro a { label, attrib } independientemente del formato recibido
   const normalizeFilter = (f) => {
@@ -51,16 +53,24 @@ function App() {
   }, []);
 
   const onSearch = async (append = false) => {
-    setLoading(true);
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setResults([]);
+    }
+    
     setStatus('Buscando en Elasticsearch...');
+    const currentFrom = append ? results.length : 0;
+    const pageSize = 25;
+
     const payload = {
       template_id: templateId,
       project_name: projectName,
       filters: Object.fromEntries(
         Object.entries(filterValues).filter(([, v]) => v?.toString().trim() !== '')
       ),
-      size: 20,
-      search_after: append ? searchAfter : undefined,
+      size: pageSize,
+      from: currentFrom,
     };
 
     try {
@@ -73,19 +83,33 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || `Error del servidor (${res.status})`);
       
-      setResults(append ? [...results, ...data.hits] : data.hits);
-      setSearchAfter(data.search_after || null);
-      setStatus(`Resultados: ${data.total}`);
+      setResults(prev => append ? [...prev, ...data.hits] : data.hits);
+      setTotalResults(data.total);
+      setStatus(`Resultados: ${data.total.toLocaleString()}`);
     } catch (error) {
-      if (error.message === 'Failed to fetch') {
-        setStatus('⚠️ No se puede conectar con el Backend (localhost:3000). ¿Está arrancado?');
-      } else {
-        setStatus('⚠️ ' + error.message);
-      }
+      setStatus('⚠️ ' + error.message);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
+
+  // Infinite Scroll Logic
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && !loading && !loadingMore && results.length < totalResults && results.length > 0) {
+          onSearch(true);
+        }
+      },
+      { threshold: 1.0 }
+    );
+
+    const sentinel = document.getElementById('scroll-sentinel');
+    if (sentinel) observer.observe(sentinel);
+
+    return () => observer.disconnect();
+  }, [loading, loadingMore, results.length, totalResults]);
 
   const onSetup = async () => {
     setStatus('Generando índice y datos iniciales...');
@@ -106,7 +130,8 @@ function App() {
   const [seedCount, setSeedCount] = useState(50);
 
   const onSeed = async () => {
-    setStatus(`Generando ${seedCount} documentos de prueba...`);
+    setIsSeeding(true);
+    setStatus(`Iniciando generación de ${seedCount.toLocaleString()} documentos...`);
     try {
       const res = await fetch(`${API_BASE}/seed`, {
         method: 'POST',
@@ -115,9 +140,12 @@ function App() {
       });
       const data = await res.json();
       setStatus(data.message);
-      onSearch(false);
+      // Recargar los primeros resultados inmediatamente
+      setTimeout(() => onSearch(false), 1500);
     } catch (error) {
       setStatus('⚠️ ' + error.message);
+    } finally {
+      setIsSeeding(false);
     }
   };
 
@@ -206,7 +234,9 @@ function App() {
                   min="1"
                   max="500000"
                 />
-                <button onClick={onSeed} className="btn-outline">Generar Datos</button>
+                <button onClick={onSeed} disabled={isSeeding} className="btn-outline">
+                  {isSeeding ? 'Iniciando...' : 'Generar Datos'}
+                </button>
               </div>
               <button onClick={onSetup} className="btn-outline mini">Reset Index</button>
             </div>
@@ -247,15 +277,18 @@ function App() {
                 </div>
               ))
             )}
-          </div>
 
-          {searchAfter && (
-            <div className="load-more">
-              <button onClick={() => onSearch(true)} disabled={loading} className="btn-more">
-                Cargar más documentos
-              </button>
-            </div>
-          )}
+            {(loadingMore || (results.length < totalResults && results.length > 0)) && (
+              <div id="scroll-sentinel" className="sentinel">
+                {loadingMore && (
+                  <div className="spinner-container">
+                    <div className="spinner"></div>
+                    <span>Cargando más resultados...</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </section>
       </main>
     </div>

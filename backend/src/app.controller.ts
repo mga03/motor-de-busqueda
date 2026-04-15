@@ -23,11 +23,12 @@ export class AppController {
     project_name: string; 
     filters?: Record<string, any>; 
     size?: number; 
+    from?: number;
     search_after?: string[] 
   }) {
-    const { template_id, project_name, filters = {}, size = 100, search_after } = body;
+    const { template_id, project_name, filters = {}, size = 100, from = 0, search_after } = body;
     try {
-      return await this.appService.search(template_id, project_name, filters, size, search_after);
+      return await this.appService.search(template_id, project_name, filters, size, from, search_after);
     } catch (error) {
       throw new HttpException({
         status: HttpStatus.SERVICE_UNAVAILABLE,

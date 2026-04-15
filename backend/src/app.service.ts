@@ -8,8 +8,9 @@ export class AppService {
   private readonly couchDb = process.env.COUCHDB_DB ?? 'service_type';
 
   private readonly nodes = (process.env.ELASTIC_NODES || 'http://localhost:9200').split(',');
-  private readonly auth = Buffer.from(`${process.env.ELASTIC_USER || 'elastic'}:${process.env.ELASTIC_PASSWORD || 'Ax10nAx10n'}`).toString('base64');
-  private readonly httpsAgent = new https.Agent({ rejectUnauthorized: false });
+  private readonly user = process.env.ELASTIC_USER;
+  private readonly password = process.env.ELASTIC_PASSWORD;
+  private readonly auth = this.user ? Buffer.from(`${this.user}:${this.password}`).toString('base64') : null;
 
   private currentNodeIndex = 0;
 
@@ -24,18 +25,18 @@ export class AppService {
         const options: any = {
           method,
           headers: {
-            'Authorization': `Basic ${this.auth}`,
             'Content-Type': 'application/json',
           },
-          // Node.js native fetch uses 'dispatcher' instead of 'agent' but for global fetch 
-          // in Node 18+ we often need to use undici if we want to bypass SSL.
-          // However, for simplicity and compatibility, we use the global fetch.
-          // IF Node version is 18+, we can use the following trick for rejectUnauthorized:
         };
 
-        // Native fetch SSL bypass trick for Node 18+
+        if (this.auth) {
+          options.headers['Authorization'] = `Basic ${this.auth}`;
+        }
+
+        // Native fetch SSL bypass trick for Node 18+ (only if https)
         if (url.startsWith('https')) {
-          (options as any).dispatcher = new (require('undici').Agent)({
+          const undici = require('undici');
+          options.dispatcher = new undici.Agent({
             connect: { rejectUnauthorized: false }
           });
         }
@@ -71,7 +72,7 @@ export class AppService {
     }
   }
 
-  buildSearchQuery(filters: Record<string, any>, size = 100, searchAfter?: string[]) {
+  buildSearchQuery(filters: Record<string, any>, size = 100, from = 0, searchAfter?: string[]) {
     const must: any[] = [];
     if (filters.ID) {
       const queryValue = filters.ID.includes('*') ? filters.ID : `*${filters.ID}*`;
@@ -90,6 +91,7 @@ export class AppService {
 
     const body: any = {
       size,
+      from,
       query: must.length > 0 ? { bool: { must } } : { match_all: {} },
       sort: [{ ID: 'asc' }],
     };
@@ -97,9 +99,9 @@ export class AppService {
     return body;
   }
 
-  async search(templateId: string, projectName: string, filters: Record<string, any>, size = 100, searchAfter?: string[]) {
+  async search(templateId: string, projectName: string, filters: Record<string, any>, size = 100, from = 0, searchAfter?: string[]) {
     const esIndex = `${templateId}.${projectName}`;
-    const body = this.buildSearchQuery(filters, size, searchAfter);
+    const body = this.buildSearchQuery(filters, size, from, searchAfter);
 
     try {
       const resp = await this.esRequest(`${esIndex}/_search`, 'POST', body);
@@ -157,54 +159,70 @@ export class AppService {
 
   async seedData(templateId: string, projectName: string, count: number = 50) {
     const esIndex = `${templateId}.${projectName}`;
+    
+    // El proceso de seeding se ejecuta en segundo plano para no bloquear al usuario
+    this.runBackgroundSeeding(templateId, projectName, count);
+
+    return { 
+      message: `Generando ${count.toLocaleString()} registros... Los primeros resultados ya están disponibles.`, 
+      templateId, 
+      projectName 
+    };
+  }
+
+  private async runBackgroundSeeding(templateId: string, projectName: string, count: number) {
+    const esIndex = `${templateId}.${projectName}`;
     const BATCH_SIZE = 1000;
     let seeded = 0;
 
     const provinces = ['SEVILLA', 'MADRID', 'BARCELONA', 'VALENCIA', 'GRANADA'];
     const equipments = ['EGATEL_MUX', 'SIEMENS_TX', 'HUAWEI_ROUTER', 'CISCO_SWITCH'];
 
-    for (let i = 0; i < count; i += BATCH_SIZE) {
-      const currentBatchCount = Math.min(BATCH_SIZE, count - i);
-      const docs: any[] = [];
-      
-      for (let j = 0; j < currentBatchCount; j++) {
-        const idNum = i + j + 1;
-        const province = provinces[Math.floor(Math.random() * provinces.length)];
-        const equipment = equipments[Math.floor(Math.random() * equipments.length)];
-        docs.push({ 
-          ID: `${province}.AUTO_${idNum.toString().padStart(6, '0')}`, 
-          State: Math.random() > 0.1 ? '1' : '0', 
-          meta: { 
-            province, 
-            equipment, 
-            center: `${province.substring(0, 3)}${Math.floor(100000 + Math.random() * 900000)}`,
-            severity: Math.floor(1 + Math.random() * 5).toString()
-          } 
+    try {
+      for (let i = 0; i < count; i += BATCH_SIZE) {
+        const currentBatchCount = Math.min(BATCH_SIZE, count - i);
+        const docs: any[] = [];
+        
+        for (let j = 0; j < currentBatchCount; j++) {
+          const idNum = i + j + 1;
+          const province = provinces[Math.floor(Math.random() * provinces.length)];
+          const equipment = equipments[Math.floor(Math.random() * equipments.length)];
+          docs.push({ 
+            ID: `${province}.AUTO_${idNum.toString().padStart(6, '0')}`, 
+            State: Math.random() > 0.1 ? '1' : '0', 
+            meta: { 
+              province, 
+              equipment, 
+              center: `${province.substring(0, 3)}${Math.floor(100000 + Math.random() * 900000)}`,
+              severity: Math.floor(1 + Math.random() * 5).toString()
+            } 
+          });
+        }
+
+        const bulkLines = docs.flatMap(doc => [
+          JSON.stringify({ index: { _index: esIndex, _id: doc.ID } }),
+          JSON.stringify(doc),
+        ]).join('\n') + '\n';
+
+        const node = this.nodes[this.currentNodeIndex];
+        const url = `${node.replace(/\/+$/, '')}/_bulk`;
+        
+        await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Basic ${this.auth}`, 'Content-Type': 'application/x-ndjson' },
+          body: bulkLines
         });
+
+        seeded += currentBatchCount;
+        if (seeded % 5000 === 0 || seeded === count) {
+          this.logger.log(`[Background Seed] ${seeded}/${count} documents into ${esIndex}...`);
+        }
       }
 
-      const bulkLines = docs.flatMap(doc => [
-        JSON.stringify({ index: { _index: esIndex, _id: doc.ID } }),
-        JSON.stringify(doc),
-      ]).join('\n') + '\n';
-
-      const node = this.nodes[this.currentNodeIndex];
-      const url = `${node.replace(/\/+$/, '')}/_bulk`; // No refresh for massive loads until the end
-      
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Authorization': `Basic ${this.auth}`, 'Content-Type': 'application/x-ndjson' },
-        body: bulkLines
-      });
-
-      if (!res.ok) throw new Error(`Bulk error in batch ${i}`);
-      seeded += currentBatchCount;
-      this.logger.log(`Seeded ${seeded}/${count} documents...`);
+      await this.esRequest(`${esIndex}/_refresh`, 'POST');
+      this.logger.log(`[Background Seed] Completed! ${count} documents added to ${esIndex}`);
+    } catch (error) {
+      this.logger.error(`[Background Seed] Error seeding data: ${error.message}`);
     }
-
-    // Final refresh to ensure all is visible
-    await this.esRequest(`${esIndex}/_refresh`, 'POST');
-
-    return { message: `Successfully seeded ${count} documents into ${esIndex}`, templateId, projectName };
   }
 }
