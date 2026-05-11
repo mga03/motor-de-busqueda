@@ -122,7 +122,7 @@ export class AppService {
       };
     } catch (error) {
       if (error.message.includes('Timeout') || error.message.includes('fetch') || error.code === 'ECONNREFUSED') {
-        throw new Error('Esperando conexión con red corporativa/VPN');
+        throw new Error('Error de conexión con Elasticsearch (Local)');
       }
       throw error;
     }
@@ -152,7 +152,7 @@ export class AppService {
 
       return { message: `Index ${esIndex} and sample document ready`, doc };
     } catch (error) {
-      if (error.message.includes('Timeout') || error.message.includes('fetch')) throw new Error('Esperando conexión con red corporativa/VPN');
+      if (error.message.includes('Timeout') || error.message.includes('fetch')) throw new Error('Error de conexión con Elasticsearch (Local)');
       throw error;
     }
   }

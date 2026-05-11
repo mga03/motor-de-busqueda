@@ -27,7 +27,7 @@ async function run() {
     console.error('FAILURE: Could not connect to the cluster.');
     console.error('Error Details:', error.message);
     if (error.message.includes('living connections') || error.message.includes('Timeout')) {
-       console.log('\n💡 TIP: Verifica que tienes la VPN corporativa encendida.');
+       console.log('\n💡 TIP: Verifica que Elasticsearch esté corriendo localmente (Docker).');
     }
   }
 }
